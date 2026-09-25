@@ -1,4 +1,9 @@
-"""脱水运行接口：维护脱水记录，覆盖确认开机、确认停机、登记故障等动作。"""
+"""脱水运行接口：维护脱水记录，覆盖确认开机、确认停机、登记故障等动作。
+
+状态序列、动作集合与统计口径统一来自 app.services.dewater_rules，
+路由层不再各自抄一份。/meta、/summary、/export 要放在 /{entry_id} 之前，
+否则会被编号路由吞掉、按整数解析失败。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
+from app.services import dewater_rules as rules
 from app.services.dewater import DewaterService
 
 router = APIRouter(prefix="/api/dewater", tags=["脱水运行"])
@@ -13,13 +19,36 @@ router = APIRouter(prefix="/api/dewater", tags=["脱水运行"])
 service = DewaterService()
 
 LIST_FIELDS = ["记录编号", "脱水机编号", "进泥量", "出泥含水率", "絮凝剂用量", "运行时长", "操作人员", "运行状态"]
-STATUSES = ["待开机", "运行中", "已停机", "故障停机"]
+
+
+@router.get("/meta")
+def get_meta() -> dict[str, Any]:
+    """页面元数据：列、状态序列与可执行动作都来自同一份判定口径，前端不再各自硬编码。"""
+    return {
+        "columns": LIST_FIELDS,
+        "statuses": rules.STATUS_ORDER,
+        "actions": list(rules.ACTION_RULES),
+        "negative_actions": rules.NEGATIVE_ACTIONS,
+    }
+
+
+@router.get("/summary")
+def get_summary() -> dict[str, Any]:
+    """脱水运行统计卡片：与运营概览同一份口径；没有记录时附说明。"""
+    return service.summary()
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出脱水运行清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": rules.MODULE, "total": total, "items": items}
 
 
 @router.get("", response_model=PageResult[dict])
 def list_entries(
     keyword: str | None = Query(default=None, description="按记录编号检索"),
-    status: str | None = Query(default=None, description="待开机、运行中、已停机、故障停机"),
+    status: str | None = Query(default=None, description="、".join(rules.STATUS_ORDER)),
     page: int = 1,
     size: int = 20,
 ) -> PageResult[dict]:
@@ -50,16 +79,9 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条脱水记录执行确认开机、确认停机、登记故障；不允许的动作会被拦下并说明原因。"""
+    """对单条脱水记录执行确认开机、确认停机、登记故障；重复开停机或不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
     entry, message = service.run_action(entry_id, action)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出脱水运行清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "dewater", "total": total, "items": items}

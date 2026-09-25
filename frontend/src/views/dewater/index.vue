@@ -35,13 +35,14 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="String(row.id)">
+        <tr v-for="row in rows" :key="String(row.id)" :class="{ 'row-abnormal': row.abnormal }">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
           <td class="row-actions">
             <button
               v-for="action in actions"
               :key="action"
               class="link"
+              :class="{ danger: negativeActions.includes(action) }"
               type="button"
               @click="runAction(action, row)"
             >
@@ -57,6 +58,7 @@
 
     <footer class="page-foot">
       <span>共 {{ total }} 条脱水运行记录</span>
+      <span v-if="noticeMessage" class="notice-text">{{ noticeMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -65,21 +67,41 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 
-import { request } from '@/api/client'
+import { fetchJson } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null>
+
+type Meta = {
+  columns: string[]
+  statuses: string[]
+  actions: string[]
+  negative_actions: string[]
+}
+
+type Summary = {
+  total: number
+  cards: { label: string; value: number }[]
+  message: string
+}
+
+type ActionPayload = {
+  ok?: boolean
+  message?: string
+}
 
 const ENDPOINT = '/api/dewater'
-const columns = ["记录编号", "脱水机编号", "进泥量", "出泥含水率", "絮凝剂用量", "运行时长", "操作人员", "运行状态"]
-const actions = ["确认开机", "确认停机", "登记故障"]
-const statuses = ["待开机", "运行中", "已停机", "故障停机"]
-const stats = [{"label": "运行机组", "value": 0}, {"label": "今日脱水时长", "value": 0}, {"label": "出泥含水率均值", "value": 0}]
+// 列、动作、统计卡片全部来自后端同一份判定口径，页面不再各自硬编码
+const columns = ref<string[]>([])
+const actions = ref<string[]>([])
+const negativeActions = ref<string[]>([])
+const stats = ref<{ label: string; value: number }[]>([])
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const noticeMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = ref<string[]>([])
 
 function resetFilters() {
   filters.value = {}
@@ -96,17 +118,37 @@ function openCreate() {
 
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
+  noticeMessage.value = ''
   try {
-    const response = await request(`${ENDPOINT}/${row.id}/actions`, {
+    const payload = await fetchJson<ActionPayload>(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
       body: JSON.stringify({ action }),
     })
-    if (!response.ok) {
-      throw new Error('脱水运行动作未生效，请稍后重试')
+    if (!payload.ok) {
+      // 业务拦截（记录不存在、重复开停机等）把后端说明原样亮出来
+      errorMessage.value = payload.message ?? '脱水运行动作未生效，请稍后重试'
+      return
     }
+    noticeMessage.value = payload.message ?? '脱水运行动作已生效'
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '脱水运行操作失败'
+  }
+}
+
+async function loadMeta() {
+  const meta = await fetchJson<Meta>(`${ENDPOINT}/meta`)
+  columns.value = meta.columns ?? []
+  actions.value = meta.actions ?? []
+  negativeActions.value = meta.negative_actions ?? []
+  filterFields.value = columns.value.slice(0, 3)
+}
+
+async function loadSummary() {
+  const summary = await fetchJson<Summary>(`${ENDPOINT}/summary`)
+  stats.value = summary.cards ?? []
+  if (summary.message) {
+    noticeMessage.value = summary.message
   }
 }
 
@@ -114,17 +156,22 @@ async function reload() {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('脱水记录列表读取失败')
-    }
-    const payload = await response.json()
+    const payload = await fetchJson<{ items?: Row[]; total?: number }>(`${ENDPOINT}?${query}`)
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    // 列表与统计走同一份口径，刷新时一起更新，保证两边一致
+    await loadSummary()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '脱水运行列表读取失败'
   }
 }
 
-onMounted(reload)
+onMounted(async () => {
+  try {
+    await loadMeta()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '脱水运行页面配置读取失败'
+  }
+  await reload()
+})
 </script>

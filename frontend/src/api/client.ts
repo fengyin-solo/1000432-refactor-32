@@ -12,8 +12,8 @@ export function request(path: string, init?: RequestInit): Promise<Response> {
   })
 }
 
-export async function fetchJson<T>(path: string): Promise<T> {
-  const response = await request(path)
+export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await request(path, init)
   if (!response.ok) {
     throw new Error(`接口返回 ${response.status}，数据未更新`)
   }
