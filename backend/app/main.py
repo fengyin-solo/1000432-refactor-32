@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import ROUTERS
+from app.services.dewater import DewaterService
 from app.store import store
 
 app = FastAPI(title="污水处理厂工艺管控平台", version="1.0.0")
@@ -34,5 +35,23 @@ def health() -> dict[str, object]:
 
 @app.get("/api/overview")
 def overview() -> dict[str, object]:
-    """运营概览：把各业务模块的待处理量汇总成看板卡片。"""
-    return store.overview()
+    """运营概览：把各业务模块的待处理量汇总成看板卡片。
+
+    脱水运行的异常/待处理量复用 DewaterService 的统一口径，
+    保证概览与脱水列表页统计永远一致。
+    """
+    payload = store.overview()
+    stats = DewaterService().statistics()
+    for item in payload["modules"]:
+        if item["name"] == "dewater":
+            item["created"] = stats["total"]
+            item["pending"] = stats["pending"]
+            item["abnormal"] = stats["abnormal"]
+            break
+    payload["cards"] = [
+        {"label": "业务模块", "value": len(payload["modules"])},
+        {"label": "今日新增", "value": sum(int(row["created"]) for row in payload["modules"])},
+        {"label": "待处理", "value": sum(int(row["pending"]) for row in payload["modules"])},
+        {"label": "异常量", "value": sum(int(row["abnormal"]) for row in payload["modules"])},
+    ]
+    return payload

@@ -85,3 +85,6 @@ desktop.ini
 *.db
 *.pid
 *.seed
+
+# ===== 脱水运行持久化数据 =====
+backend/data/
